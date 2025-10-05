@@ -13,33 +13,37 @@ import (
 	"chimera/internal/browser/webkit"
 	"chimera/internal/llm"
 	"chimera/internal/scraper"
+	persist "chimera/internal/settings"
 
+	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 )
 
 // Config controls app setup.
 type Config struct {
-	Scraper   *scraper.Scraper
-	LLM       *llm.Client
-	LLMConfig llm.Config
-	UseLLM    bool
-	AppID     string
-	AppTitle  string
+	Scraper       *scraper.Scraper
+	LLM           *llm.Client
+	LLMConfig     llm.Config
+	UseLLM        bool
+	SettingsStore *persist.Store
+	AppID         string
+	AppTitle      string
 }
 
 // App wires the GTK UI with the scraping and LLM pipeline.
 type App struct {
 	cfg Config
 
-	mu           sync.RWMutex
-	llmClient    *llm.Client
-	llmSettings  appLLMSettings
-	llmPreferred bool
-	llmTimeout   time.Duration
-	llmLastMode  bool
-	llmLastSet   bool
-	lastSource   string
+	mu            sync.RWMutex
+	llmClient     *llm.Client
+	llmSettings   appLLMSettings
+	llmPreferred  bool
+	llmTimeout    time.Duration
+	llmLastMode   bool
+	llmLastSet    bool
+	lastSource    string
+	settingsStore *persist.Store
 }
 
 // NewApp validates the configuration and returns a ready application.
@@ -61,8 +65,9 @@ func NewApp(cfg Config) (*App, error) {
 	}
 
 	app := &App{
-		cfg:        cfg,
-		llmTimeout: timeout,
+		cfg:           cfg,
+		llmTimeout:    timeout,
+		settingsStore: cfg.SettingsStore,
 	}
 
 	app.mu.Lock()
@@ -104,72 +109,147 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) activate(ctx context.Context, app *gtk.Application) error {
+	ensureTheme()
+
 	window, err := gtk.ApplicationWindowNew(app)
 	if err != nil {
 		return fmt.Errorf("create window: %w", err)
 	}
-	window.SetDefaultSize(1100, 800)
+	window.SetDefaultSize(1180, 820)
 	window.SetTitle(a.cfg.AppTitle)
+	window.SetName("chimera-window")
 
-	box, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 6)
+	root, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 18)
 	if err != nil {
-		return fmt.Errorf("create layout: %w", err)
+		return fmt.Errorf("create root layout: %w", err)
 	}
+	root.SetName("chimera-root")
+	root.SetBorderWidth(18)
 
-	toolbar, err := gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6)
+	toolbar, err := gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 10)
 	if err != nil {
 		return fmt.Errorf("create toolbar: %w", err)
 	}
+	toolbar.SetName("chimera-toolbar")
+	toolbar.SetMarginTop(6)
+	toolbar.SetMarginBottom(6)
+	toolbar.SetMarginStart(6)
+	toolbar.SetMarginEnd(6)
 
 	entry, err := gtk.EntryNew()
 	if err != nil {
 		return fmt.Errorf("create entry: %w", err)
 	}
-	entry.SetPlaceholderText("Enter URL, e.g. https://example.com")
+	entry.SetPlaceholderText("Paste a URL, e.g. https://example.com")
+	entry.SetWidthChars(48)
+	entry.SetIconFromIconName(gtk.ENTRY_ICON_SECONDARY, "system-search-symbolic")
+	entry.SetHasFrame(false)
+	entry.SetName("chimera-url-entry")
+	entry.SetHExpand(true)
 
-	scrapeBtn, err := gtk.ButtonNewWithLabel("Scrape Only")
+	scrapeBtn, err := gtk.ButtonNewWithLabel("Reader Mode")
 	if err != nil {
 		return fmt.Errorf("create scrape button: %w", err)
 	}
+	scrapeBtn.SetName("chimera-btn-secondary")
+	if ctx, err := scrapeBtn.GetStyleContext(); err == nil {
+		ctx.AddClass("flat")
+	}
+	scrapeBtn.SetTooltipText("Render using the built-in reader")
 
-	llmBtn, err := gtk.ButtonNewWithLabel("LLM Compose")
+	llmBtn, err := gtk.ButtonNewWithLabel("Compose with LLM")
 	if err != nil {
 		return fmt.Errorf("create llm button: %w", err)
+	}
+	llmBtn.SetName("chimera-btn-primary")
+	if ctx, err := llmBtn.GetStyleContext(); err == nil {
+		ctx.AddClass("suggested-action")
 	}
 
 	settingsBtn, err := gtk.ButtonNewWithLabel("LLM Settings")
 	if err != nil {
 		return fmt.Errorf("create settings button: %w", err)
 	}
+	settingsBtn.SetName("chimera-btn-ghost")
+	if ctx, err := settingsBtn.GetStyleContext(); err == nil {
+		ctx.AddClass("flat")
+	}
+	settingsBtn.SetTooltipText("Adjust endpoint, model, and defaults")
+
+	buttonRow, err := gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8)
+	if err != nil {
+		return fmt.Errorf("create action row: %w", err)
+	}
+	buttonRow.SetName("chimera-action-row")
+	buttonRow.SetHAlign(gtk.ALIGN_END)
+	buttonRow.SetVAlign(gtk.ALIGN_CENTER)
+	buttonRow.PackStart(scrapeBtn, false, false, 0)
+	buttonRow.PackStart(llmBtn, false, false, 0)
+	buttonRow.PackStart(settingsBtn, false, false, 0)
 
 	infoLabel, err := gtk.LabelNew("Ready")
 	if err != nil {
 		return fmt.Errorf("create info label: %w", err)
 	}
 	infoLabel.SetXAlign(0)
+	infoLabel.SetName("chimera-status-text")
+
+	statusBar, err := gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6)
+	if err != nil {
+		return fmt.Errorf("create status bar: %w", err)
+	}
+	statusBar.SetName("chimera-status-bar")
+	statusBar.SetMarginTop(6)
+	statusBar.SetMarginBottom(10)
+	statusBar.PackStart(infoLabel, true, true, 0)
 
 	toolbar.PackStart(entry, true, true, 0)
-	toolbar.PackStart(scrapeBtn, false, false, 0)
-	toolbar.PackStart(llmBtn, false, false, 0)
-	toolbar.PackStart(settingsBtn, false, false, 0)
+	toolbar.PackStart(buttonRow, false, false, 0)
+
+	headerBar, err := gtk.HeaderBarNew()
+	if err != nil {
+		return fmt.Errorf("create header bar: %w", err)
+	}
+	headerBar.SetShowCloseButton(true)
+	headerBar.SetTitle(a.cfg.AppTitle)
+	headerBar.SetName("chimera-header")
+	headerBar.SetCustomTitle(toolbar)
+	window.SetTitlebar(headerBar)
 
 	scroll, err := gtk.ScrolledWindowNew(nil, nil)
 	if err != nil {
 		return fmt.Errorf("create scroller: %w", err)
 	}
+	scroll.SetName("chimera-scroll")
 
 	webView, err := webkit.NewWebView()
 	if err != nil {
 		return fmt.Errorf("create webview: %w", err)
 	}
+	webView.Widget().SetName("chimera-webview")
 
-	scroll.Add(webView.Widget())
+	spinner, err := gtk.SpinnerNew()
+	if err != nil {
+		return fmt.Errorf("create spinner: %w", err)
+	}
+	spinner.SetName("chimera-spinner")
+	spinner.SetHAlign(gtk.ALIGN_CENTER)
+	spinner.SetVAlign(gtk.ALIGN_CENTER)
+	spinner.Hide()
 
-	box.PackStart(toolbar, false, false, 0)
-	box.PackStart(infoLabel, false, false, 0)
-	box.PackStart(scroll, true, true, 0)
+	overlay, err := gtk.OverlayNew()
+	if err != nil {
+		return fmt.Errorf("create overlay: %w", err)
+	}
+	overlay.Add(webView.Widget())
+	overlay.AddOverlay(spinner)
 
-	window.Add(box)
+	scroll.Add(overlay)
+
+	root.PackStart(statusBar, false, false, 0)
+	root.PackStart(scroll, true, true, 0)
+
+	window.Add(root)
 	window.ShowAll()
 
 	a.updateLLMButton(llmBtn)
@@ -190,17 +270,17 @@ func (a *App) activate(ctx context.Context, app *gtk.Application) error {
 		useLLM := a.navigationMode()
 		a.setLastMode(useLLM)
 
-		go a.handleScrape(ctx, resolved, webView, infoLabel, useLLM)
+		go a.handleScrape(ctx, resolved, webView, infoLabel, spinner, useLLM)
 		return true
 	})
 
 	scrape := func(useLLM bool) {
-		url, err := entry.GetText()
+		urlText, err := entry.GetText()
 		if err != nil {
 			a.setStatus(infoLabel, fmt.Sprintf("failed to read entry: %v", err))
 			return
 		}
-		trimmed := strings.TrimSpace(url)
+		trimmed := strings.TrimSpace(urlText)
 		if trimmed == "" {
 			a.setStatus(infoLabel, "Please provide a URL")
 			return
@@ -208,7 +288,7 @@ func (a *App) activate(ctx context.Context, app *gtk.Application) error {
 
 		a.setStatus(infoLabel, "Scraping...")
 		a.setLastMode(useLLM)
-		go a.handleScrape(ctx, trimmed, webView, infoLabel, useLLM)
+		go a.handleScrape(ctx, trimmed, webView, infoLabel, spinner, useLLM)
 	}
 
 	scrapeBtn.Connect("clicked", func() {
@@ -231,7 +311,10 @@ func (a *App) activate(ctx context.Context, app *gtk.Application) error {
 	return nil
 }
 
-func (a *App) handleScrape(ctx context.Context, target string, view *webkit.WebView, info *gtk.Label, useLLM bool) {
+func (a *App) handleScrape(ctx context.Context, target string, view *webkit.WebView, info *gtk.Label, spinner *gtk.Spinner, useLLM bool) {
+	a.startSpinner(spinner)
+	defer a.stopSpinner(spinner)
+
 	result, err := a.cfg.Scraper.Scrape(ctx, target)
 	if err != nil {
 		a.renderError(view, info, fmt.Sprintf("Scrape failed: %v", err))
@@ -251,7 +334,7 @@ func (a *App) handleScrape(ctx context.Context, target string, view *webkit.WebV
 
 		if llm.IsRateLimited(err) {
 			log.Printf("llm rate limited; falling back to scraped view: %v", err)
-			a.setStatus(info, "LLM rate limited; showing scraped view")
+			a.setStatus(info, "LLM rate limited — showing reader mode")
 			a.setLastMode(false)
 		} else {
 			a.renderError(view, info, fmt.Sprintf("LLM fallback: %v", err))
@@ -284,8 +367,11 @@ func (a *App) renderHTML(view *webkit.WebView, info *gtk.Label, html string) {
 
 func (a *App) renderError(view *webkit.WebView, info *gtk.Label, msg string) {
 	log.Println(msg)
-	html := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;background:#222;color:#eee;padding:2rem;}h1{color:#f66;}code{color:#9cf;}</style></head><body><h1>Chimera Error</h1><p>%s</p></body></html>`, template.HTMLEscapeString(msg))
-	a.renderHTML(view, info, html)
+	glib.IdleAdd(func() bool {
+		view.InjectStatusBubble("Something went wrong", msg)
+		info.SetText("Error")
+		return false
+	})
 }
 
 var simpleTmpl = template.Must(template.New("simple").Funcs(template.FuncMap{
@@ -400,6 +486,28 @@ func (a *App) setLastMode(use bool) {
 	a.mu.Unlock()
 }
 
+func (a *App) startSpinner(spinner *gtk.Spinner) {
+	if spinner == nil {
+		return
+	}
+	glib.IdleAdd(func() bool {
+		spinner.Show()
+		spinner.Start()
+		return false
+	})
+}
+
+func (a *App) stopSpinner(spinner *gtk.Spinner) {
+	if spinner == nil {
+		return
+	}
+	glib.IdleAdd(func() bool {
+		spinner.Stop()
+		spinner.Hide()
+		return false
+	})
+}
+
 func (a *App) setLastSource(src string) {
 	trimmed := strings.TrimSpace(src)
 	a.mu.Lock()
@@ -484,10 +592,10 @@ func (a *App) openSettingsDialog(parent *gtk.ApplicationWindow, llmBtn *gtk.Butt
 	if err != nil {
 		return fmt.Errorf("create grid: %w", err)
 	}
-	grid.SetRowSpacing(8)
-	grid.SetColumnSpacing(12)
-	grid.SetMarginTop(12)
-	grid.SetMarginBottom(12)
+	grid.SetRowSpacing(10)
+	grid.SetColumnSpacing(14)
+	grid.SetMarginTop(14)
+	grid.SetMarginBottom(14)
 	grid.SetMarginStart(18)
 	grid.SetMarginEnd(18)
 
@@ -505,7 +613,7 @@ func (a *App) openSettingsDialog(parent *gtk.ApplicationWindow, llmBtn *gtk.Butt
 		return fmt.Errorf("create base entry: %w", err)
 	}
 	baseEntry.SetPlaceholderText("https://api.openai.com")
-	baseEntry.SetWidthChars(40)
+	baseEntry.SetWidthChars(42)
 	baseEntry.SetText(snapshot.BaseURL)
 	grid.Attach(baseEntry, 1, 0, 1, 1)
 
@@ -568,13 +676,13 @@ func (a *App) openSettingsDialog(parent *gtk.ApplicationWindow, llmBtn *gtk.Butt
 		return fmt.Errorf("read API key: %w", err)
 	}
 
-	preferLLM := preferCheck.GetActive()
-
 	updated := appLLMSettings{
 		BaseURL: strings.TrimSpace(base),
 		Model:   strings.TrimSpace(model),
 		APIKey:  strings.TrimSpace(key),
 	}
+
+	preferLLM := preferCheck.GetActive()
 
 	if err := a.applySettings(updated, preferLLM); err != nil {
 		return fmt.Errorf("apply settings: %w", err)
@@ -619,6 +727,18 @@ func (a *App) applySettings(settings appLLMSettings, prefer bool) error {
 	a.cfg.LLMConfig = cfg
 	a.mu.Unlock()
 
+	if a.settingsStore != nil {
+		data := persist.Data{
+			BaseURL: settings.BaseURL,
+			Model:   settings.Model,
+			APIKey:  settings.APIKey,
+			UseLLM:  prefer,
+		}
+		if err := a.settingsStore.Save(data); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -633,3 +753,115 @@ type appLLMSettings struct {
 	Model   string
 	APIKey  string
 }
+
+var cssOnce sync.Once
+
+func ensureTheme() {
+	cssOnce.Do(func() {
+		provider, err := gtk.CssProviderNew()
+		if err != nil {
+			return
+		}
+		if err := provider.LoadFromData(appCSS); err != nil {
+			return
+		}
+		screen, err := gdk.ScreenGetDefault()
+		if err != nil || screen == nil {
+			return
+		}
+		gtk.AddProviderForScreen(screen, provider, gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+	})
+}
+
+const appCSS = `
+#chimera-window {
+    background: #eef1f8;
+}
+
+#chimera-header {
+    background: transparent;
+    padding: 0;
+    border-bottom: 0;
+}
+
+#chimera-root {
+    background: transparent;
+    spacing: 18px;
+}
+
+#chimera-toolbar {
+    background: #ffffff;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(34, 51, 84, 0.08);
+    box-shadow: 0 8px 24px rgba(15, 35, 95, 0.08);
+}
+
+#chimera-action-row > button {
+    margin-left: 6px;
+}
+
+#chimera-url-entry {
+    padding: 12px 16px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(57, 88, 157, 0.18);
+    font-size: 14px;
+}
+
+#chimera-btn-primary, #chimera-btn-secondary, #chimera-btn-ghost {
+    border-radius: 999px;
+    padding: 8px 18px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}
+
+#chimera-btn-primary {
+    background: linear-gradient(135deg, #4f6ef7, #7b5ffc);
+    color: #fff;
+}
+
+#chimera-btn-primary:disabled {
+    background: rgba(79, 110, 247, 0.35);
+}
+
+#chimera-btn-secondary {
+    background: rgba(79, 110, 247, 0.1);
+    color: #465275;
+}
+
+#chimera-btn-ghost {
+    color: #566289;
+}
+
+#chimera-status-bar {
+    background: #ffffff;
+    padding: 10px 16px;
+    border-radius: 14px;
+    border: 1px solid rgba(34, 51, 84, 0.06);
+    color: #4c5678;
+    font-size: 13px;
+}
+
+#chimera-status-text {
+    font-weight: 500;
+}
+
+#chimera-scroll {
+    background: transparent;
+}
+
+#chimera-webview {
+    border-radius: 22px;
+    border: 1px solid rgba(34, 51, 84, 0.08);
+    background: #ffffff;
+}
+
+#chimera-spinner {
+    min-width: 48px;
+    min-height: 48px;
+    border-radius: 24px;
+    background: rgba(239, 242, 255, 0.86);
+    padding: 12px;
+}
+`

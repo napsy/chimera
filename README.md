@@ -7,6 +7,7 @@ Chimera is a lightweight desktop browser written in Go that uses WebKitGTK for r
 - WebKitGTK UI with URL entry and two rendering modes (scrape-only, LLM composed)
 - Structured scraping pipeline that extracts titles, headings, highlighted paragraphs, and outbound links
 - Optional hand-off to a local LLM endpoint (e.g. Ollama, llama.cpp HTTP server) for bespoke HTML generation
+- Polished GTK interface with glassmorphism-inspired styling, client-side decorations, inline spinner, and navigation-aware controls.
 - Graceful fallback to the built-in summary template when the LLM is disabled or fails
 
 ## Prerequisites
@@ -64,6 +65,7 @@ Set the following environment variables before launching the app:
 - `CHIMERA_USE_LLM=1` (optional): Auto-trigger the LLM path when pressing Enter in the URL field.
 
 The request payload matches the OpenAI Chat Completions schema. The system prompt instructs the model to emit a complete HTML document; the scraped data is supplied as a single user message. Responses are expected in the `choices[0].message.content` field.
+Chimera persists LLM settings to `~/.config/chimera/settings.json`; updates made in the UI become the new default unless overridden by environment variables.
 If the LLM returns a rate-limit (HTTP 429), Chimera automatically falls back to the scraped view and switches subsequent link navigations to template mode until you manually trigger LLM Compose again.
 The assistant re-styles the page but must not summarise or drop content; all sections, wording, and links from the scrape are preserved in the generated HTML.
 

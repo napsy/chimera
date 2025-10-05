@@ -43,11 +43,13 @@ import "C"
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"unsafe"
 
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
+	"html/template"
 )
 
 // WebView wraps a WebKitWebView for GTK integration.
@@ -139,4 +141,11 @@ func goChimeraDecidePolicy(view *C.WebKitWebView, decision *C.WebKitPolicyDecisi
 	}
 
 	return C.FALSE
+}
+
+// InjectStatusBubble displays an informational panel above the page content.
+func (w *WebView) InjectStatusBubble(title, message string) {
+	html := fmt.Sprintf(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><style>body{margin:0;padding:24px;font-family:"Inter","Segoe UI",sans-serif;background:rgba(15,23,42,0.05);} .card{max-width:640px;margin:32px auto;padding:24px;border-radius:18px;background:#fff;box-shadow:0 16px 42px rgba(15,35,95,0.18);} .card h1{margin:0 0 12px 0;font-size:24px;color:#1f2937;} .card p{margin:0;font-size:15px;color:#475569;line-height:1.48;}
+</style></head><body><div class="card"><h1>%s</h1><p>%s</p></div></body></html>`, template.HTMLEscapeString(title), template.HTMLEscapeString(message))
+	w.LoadHTML(html, "")
 }
