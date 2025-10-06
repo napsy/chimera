@@ -10,6 +10,8 @@ Chimera is a lightweight desktop browser written in Go that uses WebKitGTK for r
 - Polished GTK interface with glassmorphism-inspired styling, client-side decorations, inline spinner, and navigation-aware controls.
 - Graceful fallback to the built-in summary template when the LLM is disabled or fails
 
+![Chimera](chimera.png)
+
 ## Prerequisites
 
 ### System packages
